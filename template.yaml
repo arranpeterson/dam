@@ -1,15 +1,14 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Description: Creates two IAM roles with multiple inline policies and two Lambda functions
 
 Resources:
-
   # IAM Role 1
   imageRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: dam_image_exec_role_test
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -22,7 +21,7 @@ Resources:
       Policies:
         - PolicyName: dam_image_exec_aoss
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
@@ -30,23 +29,23 @@ Resources:
                 Resource: !Sub arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*
         - PolicyName: dam_image_exec_bedrock
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
                   - bedrock:ListFoundationModels
-                Resource: '*'
+                Resource: "*"
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
                 Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-image-v1
-  # IAM Role 2  
+  # IAM Role 2
   searchRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: dam_search_exec_role_test
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -57,7 +56,7 @@ Resources:
       Policies:
         - PolicyName: dam_search_exec_aoss
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
@@ -65,12 +64,12 @@ Resources:
                 Resource: !Sub arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*
         - PolicyName: dam_search_exec_bedrock
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
                   - bedrock:ListFoundationModels
-                Resource: '*'
+                Resource: "*"
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
@@ -79,7 +78,7 @@ Resources:
   Lambda1:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: dam_image_tag_testx
+      FunctionName: dam_image_tag_test
       Handler: lambda_function.lambda_handler
       Runtime: python3.11
       Architectures:
@@ -87,11 +86,121 @@ Resources:
       Role: !GetAtt imageRole.Arn
       Timeout: 30
       MemorySize: 128
+      Environment:
+        CLOUDFRONT_URL: "https://d9yx5bzoplulh.cloudfront.net/"
+        HOST: "1axvs14gqi7wn14ixtm2.us-west-2.aoss.amazonaws.com"
+        INDEX: "image-search-multimodal-index"
+        REGION: "us-west-2"
+        SERVICE: "aoss"
+        MODEL: "amazon.titan-embed-image-v1"
       Code:
         ZipFile: |
-          exports.handler = async (event) => {
-            // Lambda function 1 code goes here
-          };
+          import json
+          import boto3
+          import os
+          from opensearchpy import OpenSearch, RequestsHttpConnection
+          from requests_aws4auth import AWS4Auth
+          from botocore.session import Session
+
+          session = boto3.Session()
+          # env var
+          host = os.environ.get('HOST')
+          index = os.environ.get('INDEX') 
+          region = os.environ.get('REGION')
+          service = os.environ.get('SERVICE')
+          model = os.environ.get('MODEL')
+          cloudfrontURL = os.environ.get('CLOUDFRONT_URL')
+
+          # user input from upload form
+          image_title = 'test2'
+          image_user_labels = 'rekognition'
+          image_class = 'sealink'
+
+          # Dynamic STS Credentials using botocore
+          credentials = Session().get_credentials()
+          awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, service, session_token=credentials.token)
+          client = OpenSearch(
+              hosts = [{'host': host, 'port': 443}],
+              http_auth = awsauth,
+              use_ssl = True,
+              verify_certs = True,
+              connection_class = RequestsHttpConnection,
+              pool_maxsize = 20
+          )
+
+          # Create the API response and add some extra content to support CORS
+          response = {
+              "statusCode": 200,
+              "headers": {
+                  "Access-Control-Allow-Origin": '*'
+              },
+              "isBase64Encoded": False
+          }
+
+          def get_embedding_for_text(text):
+              # Bedrock Runtime client used to invoke the model
+              bedrock_runtime = boto3.client(service_name='bedrock-runtime', region_name=region)
+              body = json.dumps(
+                  {
+                      "inputText": text
+                  }
+              )
+              # The actual call to retrieve embeddings from the model
+              response = bedrock_runtime.invoke_model(
+                body=body, 
+                modelId=model, 
+                accept='application/json', 
+                contentType='application/json'
+              )
+              vector_json = json.loads(response['body'].read().decode('utf8'))
+              return vector_json, text
+
+
+          def detect_labels(photo, bucket):
+              client = session.client('rekognition', region_name=region)
+              response = client.detect_labels(Image={'S3Object':{'Bucket':bucket,'Name':photo}},
+                  MaxLabels=10,
+                  MinConfidence=85,
+                  # Uncomment to use image properties and filtration settings
+                  #Features=["GENERAL_LABELS", "IMAGE_PROPERTIES"],
+                  #Settings={"GeneralLabels": {"LabelInclusionFilters":["Cat"]},
+                  # "ImageProperties": {"MaxDominantColors":10}}
+              )
+              print('Detected labels for ' + photo)
+              label_names = [label['Name'] for label in response['Labels']]
+              return label_names
+              
+              
+          def lambda_handler(event, context):
+              bucket = event['Records'][0]['s3']['bucket']['name']
+              photo = event['Records'][0]['s3']['object']['key']
+
+              label_list = detect_labels(photo, bucket)
+              label_string = ' '.join(label_list + [image_user_labels])
+              print(label_string)
+              text_embedding = get_embedding_for_text(label_string)
+              
+              # Add a document to the index.
+              document = {
+
+                  "image_path": photo,
+                  "image_title": image_title,
+                  "image_labels": label_string,
+                  "image_class": image_class,
+                  "image_url": cloudfrontURL + photo, 
+                  "multimodal_vector": text_embedding[0]['embedding']
+              }
+              #print(query)
+              
+              try:
+                  index_document = client.index(body=document,index=index)
+                  print('\nAdding document:')
+                  #print(index_document)
+                  response['body'] = document
+              except Exception as ex: 
+                  print(ex)
+              
+              return response
 
   # Lambda Function 2
   Lambda2:
@@ -105,11 +214,95 @@ Resources:
       Role: !GetAtt searchRole.Arn
       Timeout: 30
       MemorySize: 128
+      Environment:
+        HOST: "1axvs14gqi7wn14ixtm2.us-west-2.aoss.amazonaws.com"
+        INDEX: "image-search-multimodal-index"
+        REGION: "us-west-2"
+        SERVICE: "aoss"
+        MODEL: "amazon.titan-embed-image-v1"
+        SEARCH_STRING: "beach"
       Code:
         ZipFile: |
-          exports.handler = async (event) => {
-            // Lambda function 2 code goes here
-          };
+          import json
+          import boto3
+          import os
+          from opensearchpy import OpenSearch, RequestsHttpConnection
+          from requests_aws4auth import AWS4Auth
+          from botocore.session import Session
+          # env var
+          search_string = os.environ.get('SEARCH_STRING', 'beach')
+          host = os.environ.get('HOST')
+          index = os.environ.get('INDEX')
+          region = os.environ.get('REGION')
+          service = os.environ.get('SERVICE') 
+          model = os.environ.get('MODEL')
+          # Bedrock Runtime client used to invoke the model
+          bedrock_runtime = boto3.client(service_name='bedrock-runtime', region_name='us-west-2')
+          # Dynamic STS Credentials using botocore
+          credentials = Session().get_credentials()
+          awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, service, session_token=credentials.token)
+          client = OpenSearch(
+              hosts = [{'host': host, 'port': 443}],
+              http_auth = awsauth,
+              use_ssl = True,
+              verify_certs = True,
+              connection_class = RequestsHttpConnection,
+              pool_maxsize = 20
+          )
+          # Create the API response and add some extra content to support CORS
+          response = {
+              "statusCode": 200,
+              "headers": {
+                  "Access-Control-Allow-Origin": '*'
+              },
+              "isBase64Encoded": False
+          }
+
+          def get_embedding_for_text(text):
+              body = json.dumps(
+                  {
+                      "inputText": text
+                  }
+              )
+              # The actual call to retrieve embeddings from the model
+              response = bedrock_runtime.invoke_model(
+                body=body, 
+                modelId=model, 
+                accept='application/json', 
+                contentType='application/json'
+              )
+              vector_json = json.loads(response['body'].read().decode('utf8'))
+              return vector_json, text
+
+
+          def lambda_handler(event, context):
+              
+              text_embedding = get_embedding_for_text(search_string)
+              
+              query = {
+                  "size": 5,
+                  "query": {
+                      "knn": {
+                      "multimodal_vector": {
+                          "vector": text_embedding[0]['embedding'],
+                          "k": 1
+                      }
+                      }
+                  },
+                  "_source": ["image_title", "image_path", "image_labels", "image_class", "image_url"]
+              }
+              #print(query)
+
+              try:
+                  text_based_search_response = client.search(body=query, index=index)
+                  print(text_based_search_response)
+
+                  response['body'] = text_based_search_response
+              except Exception as ex: 
+                  print(ex)
+              
+              return response
+
   Bucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -128,17 +321,17 @@ Resources:
       Bucket: !Ref Bucket
       PolicyDocument:
         Id: RequireEncryptionInTransit
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
-          - Principal: '*'
-            Action: '*'
+          - Principal: "*"
+            Action: "*"
             Effect: Deny
             Resource:
               - !GetAtt Bucket.Arn
               - !Sub ${Bucket.Arn}/*
             Condition:
               Bool:
-                aws:SecureTransport: 'false'
+                aws:SecureTransport: "false"
   Bucket2:
     Type: AWS::S3::Bucket
     Properties:
@@ -157,17 +350,17 @@ Resources:
       Bucket: !Ref Bucket2
       PolicyDocument:
         Id: RequireEncryptionInTransit
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
-          - Principal: '*'
-            Action: '*'
+          - Principal: "*"
+            Action: "*"
             Effect: Deny
             Resource:
               - !GetAtt Bucket2.Arn
               - !Sub ${Bucket2.Arn}/*
             Condition:
               Bool:
-                aws:SecureTransport: 'false'
+                aws:SecureTransport: "false"
   Bucket3:
     Type: AWS::S3::Bucket
     Properties:
@@ -186,14 +379,14 @@ Resources:
       Bucket: !Ref Bucket3
       PolicyDocument:
         Id: RequireEncryptionInTransit
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
-          - Principal: '*'
-            Action: '*'
+          - Principal: "*"
+            Action: "*"
             Effect: Deny
             Resource:
               - !GetAtt Bucket3.Arn
               - !Sub ${Bucket3.Arn}/*
             Condition:
               Bool:
-                aws:SecureTransport: 'false'
+                aws:SecureTransport: "false"
