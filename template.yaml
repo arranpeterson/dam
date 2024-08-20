@@ -1,12 +1,28 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Creates two IAM roles with multiple inline policies and two Lambda functions
-
+Description: Creates three IAM roles with multiple inline policies and three Lambda functions to test hackathon
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: Existing S3 Bucket Name with images
+    Default: "XXXXXXXXXXX-vectorimagestore"
+  AossEndpoint:
+    Type: String
+    Description: Existing Amazon OpenSearch Serverless Endpoint
+    Default: "XXXXXXXXXXXX.us-west-2.aoss.amazonaws.com"
+  AossIndex:
+    Type: String
+    Description: Existing Amazon OpenSearch Serverless Index Name
+    Default: "image-search-multimodal-index"
+  CloudFrontUrl:
+    Type: String
+    Description: Existing CloudFront URL
+    Default: "https://XXXXXXXXXXX.cloudfront.net/"
 Resources:
   # IAM Role 1
   imageRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: dam_image_exec_role_test
+      RoleName: dam_image_tag_exec_role_test
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -74,12 +90,45 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                 Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-image-v1
+  # IAM Role 3
+  imageGenRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dam_image_gen_exec_role_test
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Policies:
+        - PolicyName: dam_image_gen_exec_bedrock
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:ListFoundationModels
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-image-generator-v1
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/stable-diffusion-xl
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/stable-diffusion-2-1
+                  - !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-image-generator-v2:0
+
   # Lambda Function 1
   Lambda1:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: dam_image_tag_test
-      Handler: lambda_function.lambda_handler
+      Handler: index.lambda_handler
       Runtime: python3.11
       Architectures:
         - x86_64
@@ -87,12 +136,13 @@ Resources:
       Timeout: 30
       MemorySize: 128
       Environment:
-        CLOUDFRONT_URL: "https://d9yx5bzoplulh.cloudfront.net/"
-        HOST: "1axvs14gqi7wn14ixtm2.us-west-2.aoss.amazonaws.com"
-        INDEX: "image-search-multimodal-index"
-        REGION: "us-west-2"
-        SERVICE: "aoss"
-        MODEL: "amazon.titan-embed-image-v1"
+        Variables:
+          CLOUDFRONT_URL: !Sub ${CloudFrontUrl}
+          HOST: !Sub ${AossEndpoint}
+          INDEX: !Sub ${AossIndex}
+          REGION: "us-west-2"
+          SERVICE: "aoss"
+          MODEL: "amazon.titan-embed-image-v1"
       Code:
         ZipFile: |
           import json
@@ -202,12 +252,50 @@ Resources:
               
               return response
 
+          # Test Event
+          #   "Records": [
+          #     {
+          #       "eventVersion": "2.0",
+          #       "eventSource": "aws:s3",
+          #       "awsRegion": "us-east-1",
+          #       "eventTime": "1970-01-01T00:00:00.000Z",
+          #       "eventName": "ObjectCreated:Put",
+          #       "userIdentity": {
+          #         "principalId": "EXAMPLE"
+          #       },
+          #       "requestParameters": {
+          #         "sourceIPAddress": "127.0.0.1"
+          #       },
+          #       "responseElements": {
+          #         "x-amz-request-id": "EXAMPLE123456789",
+          #         "x-amz-id-2": "EXAMPLE123/5678abcdefghijklambdaisawesome/mnopqrstuvwxyzABCDEFGH"
+          #       },
+          #       "s3": {
+          #         "s3SchemaVersion": "1.0",
+          #         "configurationId": "testConfigRule",
+          #         "bucket": {
+          #           "name": "bucketname",
+          #           "ownerIdentity": {
+          #             "principalId": "EXAMPLE"
+          #           },
+          #           "arn": "arn:aws:s3:::682723651788-vectorimagestore"
+          #         },
+          #         "object": {
+          #           "key": "002.jpg",
+          #           "size": 1024,
+          #           "eTag": "0123456789abcdef0123456789abcdef",
+          #           "sequencer": "0A1B2C3D4E5F678901"
+          #         }
+          #       }
+          #     }
+          #   ]
+          # }
   # Lambda Function 2
   Lambda2:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: dam_search_string_test
-      Handler: lambda_function.lambda_handler
+      Handler: index.lambda_handler
       Runtime: python3.11
       Architectures:
         - x86_64
@@ -215,12 +303,13 @@ Resources:
       Timeout: 30
       MemorySize: 128
       Environment:
-        HOST: "1axvs14gqi7wn14ixtm2.us-west-2.aoss.amazonaws.com"
-        INDEX: "image-search-multimodal-index"
-        REGION: "us-west-2"
-        SERVICE: "aoss"
-        MODEL: "amazon.titan-embed-image-v1"
-        SEARCH_STRING: "beach"
+        Variables:
+          HOST: !Sub ${AossEndpoint}
+          INDEX: !Sub ${AossIndex}
+          REGION: "us-west-2"
+          SERVICE: "aoss"
+          MODEL: "amazon.titan-embed-image-v1"
+          SEARCH_STRING: "beach"
       Code:
         ZipFile: |
           import json
@@ -302,91 +391,181 @@ Resources:
                   print(ex)
               
               return response
+  # Lambda Function 3
+  Lambda3:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: dam_image_gen_test
+      Handler: index.lambda_handler
+      Runtime: python3.11
+      Architectures:
+        - x86_64
+      Role: !GetAtt imageGenRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          S3BUCKETNAME: !Sub ${S3BucketName}
+          REGION: "us-west-2"
+          MODEL: "amazon.titan-image-generator-v1"
+          INPUT_S3_PREFIX: "image-data"
+          OUTPUT_S3_PREFIX: "test_gen"
+          PROMPT: "new york city background at night with manhattan lights"
+          NEGATIVE_PROMPT: "bad quality, low resolution"
+          MODE: "DEFAULT"
+          IMAGE_NAME: "012.jpg"
+          IMAGE_LABELS: "bus"
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          import base64
+          import io
+          from random import randint
 
-  Bucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub dam-raw-${AWS::AccountId}
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: aws:kms
-              KMSMasterKeyID: alias/aws/s3
-      PublicAccessBlockConfiguration:
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-  BucketBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref Bucket
-      PolicyDocument:
-        Id: RequireEncryptionInTransit
-        Version: "2012-10-17"
-        Statement:
-          - Principal: "*"
-            Action: "*"
-            Effect: Deny
-            Resource:
-              - !GetAtt Bucket.Arn
-              - !Sub ${Bucket.Arn}/*
-            Condition:
-              Bool:
-                aws:SecureTransport: "false"
-  Bucket2:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub dam-store-${AWS::AccountId}
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: aws:kms
-              KMSMasterKeyID: alias/aws/s3
-      PublicAccessBlockConfiguration:
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-  Bucket2BucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref Bucket2
-      PolicyDocument:
-        Id: RequireEncryptionInTransit
-        Version: "2012-10-17"
-        Statement:
-          - Principal: "*"
-            Action: "*"
-            Effect: Deny
-            Resource:
-              - !GetAtt Bucket2.Arn
-              - !Sub ${Bucket2.Arn}/*
-            Condition:
-              Bool:
-                aws:SecureTransport: "false"
-  Bucket3:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub dam-share-${AWS::AccountId}
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: aws:kms
-              KMSMasterKeyID: alias/aws/s3
-      PublicAccessBlockConfiguration:
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-  Bucket3BucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref Bucket3
-      PolicyDocument:
-        Id: RequireEncryptionInTransit
-        Version: "2012-10-17"
-        Statement:
-          - Principal: "*"
-            Action: "*"
-            Effect: Deny
-            Resource:
-              - !GetAtt Bucket3.Arn
-              - !Sub ${Bucket3.Arn}/*
-            Condition:
-              Bool:
-                aws:SecureTransport: "false"
+          s3_client = boto3.client('s3')
+          client = boto3.client("bedrock-runtime", region_name="us-west-2")
+          # Create the API response and add some extra content to support CORS
+          response = {
+              "statusCode": 200,
+              "headers": {
+                  "Access-Control-Allow-Origin": '*'
+              },
+              "isBase64Encoded": False
+          }
+
+
+          def lambda_handler(event, context):
+
+              # print(event)
+              
+              #Fetch request payload
+              # s3_bucket = event['S3Bucket']
+              # input_s3_prefix = event['InputS3Prefix']
+              # prompt = event['Prompt']
+              # negative_prompt = event['NegativePrompt']
+              # mode = event['Mode']
+              # image_file_name = event['Image']['ImageName']
+              # image_labels = event['Image']['Labels']
+              # s3_bucket = 'image-processing-bucket-682723651788'
+              # model_id = "amazon.titan-image-generator-v1"
+              # input_s3_prefix = 'test'
+              # prompt =  'We want the breed to remain a corgi, but just add a hat on top of its head. The hat can be any type of hat in proportion to its body'
+              # negative_prompt = 'bad quality, low resolution, cartoon, do not change the dog'
+              # mode =  'DEFAULT'
+              # image_file_name = 'corgi1.jpeg'
+              # image_labels =  'dog, flowers'
+              s3_bucket = os.environ.get('S3BUCKETNAME') 
+              model_id = os.environ.get('MODEL') 
+              input_s3_prefix = os.environ.get('INPUT_S3_PREFIX')
+              output_s3_prefix = os.environ.get('OUTPUT_S3_PREFIX')
+              prompt =  os.environ.get('PROMPT')
+              negative_prompt = os.environ.get('NEGATIVE_PROMPT')
+              mode =  os.environ.get('MODE')
+              image_file_name = os.environ.get('IMAGE_NAME')
+              image_labels =  os.environ.get('IMAGE_LABELS')
+              
+              image_file_uri = f"s3://{s3_bucket}/{input_s3_prefix}/{image_file_name}"
+              image_file_name_without_extension = image_file_name.split('.')[0]
+              
+              # Path to store images files in temporary storage
+              tmp_image_path = f'/tmp/{image_file_name}'
+              tmp_new_image_path = f'/tmp/{image_file_name_without_extension}_new.jpeg'
+              
+              s3_output_key = f'{input_s3_prefix}/{image_file_name_without_extension}.json'
+
+              try:
+                  
+                  s3_client.download_file(s3_bucket, f'{input_s3_prefix}/{image_file_name}', tmp_image_path)    
+                  
+                  # Convert images to base64 encoded strings
+                  image_base64 = image_to_base64(tmp_image_path)
+                  
+                  # Build Bedrock request
+                  # request_payload = {
+                  #     "taskType": "INPAINTING",
+                  #     "inPaintingParams": {
+                  #         "image": image_base64,
+                  #         "text": prompt,
+                  #         "negativeText": negative_prompt,
+                  #         "maskPrompt": image_labels,
+                  #     },
+                  #     "imageGenerationConfig": {
+                  #         "numberOfImages": 1,
+                  #         "quality": "premium",
+                  #         "height": 1024,
+                  #         "width": 1024,
+                  #         "cfgScale": 1.1,
+                  #         "seed": randint(0, 100000),
+                  #     }
+                  # }    
+                  request_payload = {
+                      "taskType": "OUTPAINTING",
+                      "outPaintingParams": {
+                          "image": image_base64,
+                          "text": prompt,
+                          "negativeText": negative_prompt,
+                          "maskPrompt": image_labels,
+                      },
+                      "imageGenerationConfig": {
+                          "numberOfImages": 1,
+                          "quality": "premium",
+                          "height": 1024,
+                          "width": 1024,
+                          "cfgScale": 8.0,
+                          "seed": randint(0, 100000),
+                      }
+                  }    
+                  # Convert the native request to JSON.
+                  request_payload_string = json.dumps(request_payload)
+                  
+                  #upload image
+                  s3_client.put_object(Body=request_payload_string, Bucket=s3_bucket, Key=s3_output_key)
+                  
+                  # Invoke the model with the request.
+                  response = client.invoke_model(modelId=model_id, body=request_payload_string)
+
+                  # Decode the response body.
+                  model_response = json.loads(response["body"].read())
+
+                  # Extract the image data.
+                  base64_image_data = model_response["images"][0]
+
+                  image_data = base64.b64decode(base64_image_data)
+
+                  # image_path = os.path.join(output_dir, f"image_{i}.png")
+                  with open(tmp_new_image_path, "wb") as file:
+                      file.write(image_data)
+
+                  try: 
+                      # Upload the new image file to S3
+                      s3_client.upload_file(tmp_new_image_path, s3_bucket, f'{output_s3_prefix}/{image_file_name_without_extension}_new.jpeg')
+                      print(f"File '{image_file_name_without_extension}_new.jpeg' uploaded successfully to S3 bucket '{s3_bucket}'.")
+                  except Exception as e:
+                      print(f"Error uploading file to S3: {e}")
+
+
+              except Exception as e:
+                  print('Error in building request')
+                  print(e)
+
+              finally:
+                  if os.path.exists(tmp_image_path):
+                      os.remove(tmp_image_path)
+
+              # Construct the response data
+              response_data = {
+                  'Filename': f'{image_file_name_without_extension}_new.jpeg',
+                  'S3Bucket': input_s3_prefix,
+                  'Data':  base64_image_data
+              }
+
+              response['body'] = response_data 
+
+              return response
+
+
+          def image_to_base64(img_path) -> str:
+              with open(img_path, "rb") as f:
+                  return base64.b64encode(f.read()).decode("utf-8")
