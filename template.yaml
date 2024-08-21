@@ -135,6 +135,9 @@ Resources:
       Role: !GetAtt imageRole.Arn
       Timeout: 30
       MemorySize: 128
+      Layers:
+        - !Ref OpenSearchLayer
+        - !Ref RequestsAWS4AuthLayer
       Environment:
         Variables:
           CLOUDFRONT_URL: !Sub ${CloudFrontUrl}
@@ -305,6 +308,9 @@ Resources:
       Role: !GetAtt searchRole.Arn
       Timeout: 30
       MemorySize: 128
+      Layers:
+        - !Ref OpenSearchLayer
+        - !Ref RequestsAWS4AuthLayer
       Environment:
         Variables:
           HOST: !Sub ${AossEndpoint}
@@ -572,3 +578,35 @@ Resources:
           def image_to_base64(img_path) -> str:
               with open(img_path, "rb") as f:
                   return base64.b64encode(f.read()).decode("utf-8")
+
+  OpenSearchLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: opensearch-layer-test
+      Description: OpenSearch Layer
+      Content:
+        S3Bucket: arranp-aws-source-oregon
+        S3Key: source-files/lambda-layers/opensearch-layer.zip
+      CompatibleRuntimes:
+        - python3.9
+        - python3.10
+        - python3.11
+      CompatibleArchitectures:
+        - arm64
+        - x86_64
+
+  RequestsAWS4AuthLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: requests-aws4auth-layer-test
+      Description: Amazon Web Services version 4 authentication for the Python Requests library
+      Content:
+        S3Bucket: arranp-aws-source-oregon
+        S3Key: source-files/lambda-layers/requests-aws4auth-layer.zip
+      CompatibleRuntimes:
+        - python3.9
+        - python3.10
+        - python3.11
+      CompatibleArchitectures:
+        - arm64
+        - x86_64
